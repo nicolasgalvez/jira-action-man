@@ -1,5 +1,37 @@
-import { postToJira, extractImageUrls, replaceImageUrls } from "../src/jira";
+import {
+  postToJira,
+  extractImageUrls,
+  replaceImageUrls,
+  downloadImage,
+  isSafeUrl,
+  isPrivateIp,
+  deduplicateFilenames,
+} from "../src/jira";
 import { JiraConfig, PrContext } from "../src/types";
+
+jest.mock("node:dns/promises", () => ({
+  lookup: jest.fn(async (hostname: string, options?: { all?: boolean }) => {
+    // The production code always uses { all: true }; older tests that pass no
+    // options receive the legacy single-record shape.
+    let addresses: Array<{ address: string; family: number }>;
+    if (hostname === "resolves-to-private.example.com") {
+      addresses = [{ address: "127.0.0.1", family: 4 }];
+    } else if (hostname === "resolves-to-10.example.com") {
+      addresses = [{ address: "10.0.0.1", family: 4 }];
+    } else if (hostname === "resolves-to-mapped-ipv6.example.com") {
+      addresses = [{ address: "::ffff:127.0.0.1", family: 6 }];
+    } else if (hostname === "resolves-to-mixed.example.com") {
+      // One public, one private — any-private must reject
+      addresses = [
+        { address: "93.184.216.34", family: 4 },
+        { address: "10.0.0.1", family: 4 },
+      ];
+    } else {
+      addresses = [{ address: "93.184.216.34", family: 4 }];
+    }
+    return options?.all ? addresses : addresses[0];
+  }),
+}));
 
 jest.mock("@actions/core", () => ({
   info: jest.fn(),
@@ -282,25 +314,57 @@ describe("extractImageUrls", () => {
 
   it("extracts a single image", () => {
     const md = "Before ![screenshot](https://example.com/img.png) after";
-    expect(extractImageUrls(md)).toEqual([
-      { alt: "screenshot", url: "https://example.com/img.png" },
-    ]);
+    const results = extractImageUrls(md);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      alt: "screenshot",
+      url: "https://example.com/img.png",
+    });
   });
 
   it("extracts multiple images", () => {
     const md =
       "![a](https://example.com/1.png) text ![b](https://example.com/2.jpg)";
-    expect(extractImageUrls(md)).toEqual([
-      { alt: "a", url: "https://example.com/1.png" },
-      { alt: "b", url: "https://example.com/2.jpg" },
-    ]);
+    const results = extractImageUrls(md);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({
+      alt: "a",
+      url: "https://example.com/1.png",
+    });
+    expect(results[1]).toMatchObject({
+      alt: "b",
+      url: "https://example.com/2.jpg",
+    });
   });
 
   it("handles empty alt text", () => {
     const md = "![](https://example.com/img.png)";
-    expect(extractImageUrls(md)).toEqual([
-      { alt: "", url: "https://example.com/img.png" },
-    ]);
+    const results = extractImageUrls(md);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      alt: "",
+      url: "https://example.com/img.png",
+    });
+  });
+
+  it("extracts image with title text", () => {
+    const md = '![alt](https://example.com/img.png "A title")';
+    const results = extractImageUrls(md);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      alt: "alt",
+      url: "https://example.com/img.png",
+    });
+  });
+
+  it("extracts image inside a blockquote", () => {
+    const md = "> Some quote\n>\n> ![bq](https://example.com/bq.png)\n";
+    const results = extractImageUrls(md);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      alt: "bq",
+      url: "https://example.com/bq.png",
+    });
   });
 });
 
@@ -319,6 +383,234 @@ describe("replaceImageUrls", () => {
     expect(replaceImageUrls(md, map)).toBe(
       "![a](1.png) ![b](https://other.com/2.png)",
     );
+  });
+});
+
+describe("isPrivateIp", () => {
+  it("detects loopback", () => {
+    expect(isPrivateIp("127.0.0.1")).toBe(true);
+  });
+
+  it("detects 10.x", () => {
+    expect(isPrivateIp("10.0.0.1")).toBe(true);
+  });
+
+  it("detects 192.168.x", () => {
+    expect(isPrivateIp("192.168.1.1")).toBe(true);
+  });
+
+  it("detects 172.16.x", () => {
+    expect(isPrivateIp("172.16.0.1")).toBe(true);
+  });
+
+  it("allows public IPs", () => {
+    expect(isPrivateIp("93.184.216.34")).toBe(false);
+  });
+});
+
+describe("isSafeUrl", () => {
+  it("allows HTTPS URLs", async () => {
+    await expect(isSafeUrl("https://example.com/img.png")).resolves.toBe(true);
+  });
+
+  it("rejects HTTP URLs", async () => {
+    await expect(isSafeUrl("http://example.com/img.png")).resolves.toBe(false);
+  });
+
+  it("rejects private IP 127.0.0.1", async () => {
+    await expect(isSafeUrl("https://127.0.0.1/img.png")).resolves.toBe(false);
+  });
+
+  it("rejects private IP 10.x", async () => {
+    await expect(isSafeUrl("https://10.0.0.1/img.png")).resolves.toBe(false);
+  });
+
+  it("rejects private IP 192.168.x", async () => {
+    await expect(isSafeUrl("https://192.168.1.1/img.png")).resolves.toBe(false);
+  });
+
+  it("rejects private IP 172.16.x", async () => {
+    await expect(isSafeUrl("https://172.16.0.1/img.png")).resolves.toBe(false);
+  });
+
+  it("rejects link-local IP 169.254.x", async () => {
+    await expect(isSafeUrl("https://169.254.1.1/img.png")).resolves.toBe(false);
+  });
+
+  it("allows HTTPS when host is in allowedHosts", async () => {
+    await expect(
+      isSafeUrl("https://cdn.example.com/img.png", ["cdn.example.com"]),
+    ).resolves.toBe(true);
+  });
+
+  it("rejects HTTPS when host is not in allowedHosts", async () => {
+    await expect(
+      isSafeUrl("https://evil.com/img.png", ["cdn.example.com"]),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects invalid URLs", async () => {
+    await expect(isSafeUrl("not-a-url")).resolves.toBe(false);
+  });
+
+  it("rejects hostnames that resolve to private IPs (DNS rebinding)", async () => {
+    await expect(
+      isSafeUrl("https://resolves-to-private.example.com/img.png"),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects hostnames that resolve to 10.x IPs", async () => {
+    await expect(
+      isSafeUrl("https://resolves-to-10.example.com/img.png"),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects hostnames that resolve to IPv4-mapped IPv6 private addresses", async () => {
+    await expect(
+      isSafeUrl("https://resolves-to-mapped-ipv6.example.com/img.png"),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects when any of multiple resolved addresses is private", async () => {
+    await expect(
+      isSafeUrl("https://resolves-to-mixed.example.com/img.png"),
+    ).resolves.toBe(false);
+  });
+
+  it("does not treat hostname '10.example.com' as a private IP literal", async () => {
+    // The hostname starts with '10.' but is not an IP literal — DNS lookup
+    // returns a public address, so it should be allowed.
+    await expect(isSafeUrl("https://10.example.com/img.png")).resolves.toBe(
+      true,
+    );
+  });
+
+  it("still runs private-IP checks when an allowlist is provided", async () => {
+    // Allowlisted hostname that resolves to a private IP must still be rejected
+    await expect(
+      isSafeUrl("https://resolves-to-10.example.com/img.png", [
+        "resolves-to-10.example.com",
+      ]),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects literal private IPs even if allowlisted", async () => {
+    await expect(
+      isSafeUrl("https://127.0.0.1/img.png", ["127.0.0.1"]),
+    ).resolves.toBe(false);
+  });
+});
+
+describe("downloadImage", () => {
+  const origFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = origFetch;
+    core.warning.mockClear();
+  });
+
+  it("strips charset from content-type and uses correct extension", async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "image/jpeg; charset=utf-8" }),
+      arrayBuffer: async () => pngBytes.buffer,
+    })) as unknown as typeof global.fetch;
+
+    const result = await downloadImage("https://example.com/photo");
+    expect(result).not.toBeNull();
+    expect(result!.filename).toBe("photo.jpg");
+    expect(result!.contentType).toBe("image/jpeg");
+  });
+
+  it("rejects non-image content-type", async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "text/html" }),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof global.fetch;
+
+    const result = await downloadImage("https://example.com/page.html");
+    expect(result).toBeNull();
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('non-image content-type "text/html"'),
+    );
+  });
+
+  it("rejects oversized images by content-length", async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        "content-type": "image/png",
+        "content-length": "20000000",
+      }),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof global.fetch;
+
+    const result = await downloadImage("https://example.com/huge.png");
+    expect(result).toBeNull();
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining("exceeds"),
+    );
+  });
+
+  it("blocks unsafe URLs", async () => {
+    const result = await downloadImage("http://example.com/img.png");
+    expect(result).toBeNull();
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining("unsafe URL"),
+    );
+  });
+});
+
+describe("deduplicateFilenames", () => {
+  it("returns filenames unchanged when no collisions", () => {
+    const entries = [
+      { url: "https://a.com/1.png", filename: "1.png" },
+      { url: "https://b.com/2.png", filename: "2.png" },
+    ];
+    const result = deduplicateFilenames(entries);
+    expect(result.get("https://a.com/1.png")).toBe("1.png");
+    expect(result.get("https://b.com/2.png")).toBe("2.png");
+  });
+
+  it("keeps the first occurrence and suffixes duplicates", () => {
+    const entries = [
+      { url: "https://a.com/img.png", filename: "img.png" },
+      { url: "https://b.com/img.png", filename: "img.png" },
+      { url: "https://c.com/img.png", filename: "img.png" },
+    ];
+    const result = deduplicateFilenames(entries);
+    expect(result.get("https://a.com/img.png")).toBe("img.png");
+    expect(result.get("https://b.com/img.png")).toBe("img-1.png");
+    expect(result.get("https://c.com/img.png")).toBe("img-2.png");
+  });
+
+  it("handles files without extensions", () => {
+    const entries = [
+      { url: "https://a.com/image", filename: "image" },
+      { url: "https://b.com/image", filename: "image" },
+    ];
+    const result = deduplicateFilenames(entries);
+    expect(result.get("https://a.com/image")).toBe("image");
+    expect(result.get("https://b.com/image")).toBe("image-1");
+  });
+
+  it("avoids re-colliding with an existing non-duplicate name", () => {
+    // Two files named img.png and one already-named img-1.png: the deduped
+    // second copy must skip img-1.png and use img-2.png instead.
+    const entries = [
+      { url: "https://a.com/img.png", filename: "img.png" },
+      { url: "https://b.com/img.png", filename: "img.png" },
+      { url: "https://c.com/img-1.png", filename: "img-1.png" },
+    ];
+    const result = deduplicateFilenames(entries);
+    expect(result.get("https://a.com/img.png")).toBe("img.png");
+    expect(result.get("https://b.com/img.png")).toBe("img-2.png");
+    expect(result.get("https://c.com/img-1.png")).toBe("img-1.png");
   });
 });
 
