@@ -1,4 +1,6 @@
 import * as core from "@actions/core";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import j2m from "jira2md";
 import { marked } from "marked";
 import { JiraCommentMode, JiraConfig, PrContext } from "./types";
@@ -7,6 +9,7 @@ interface ImageRef {
   alt: string;
   url: string;
   raw: string;
+  title?: string;
 }
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -37,7 +40,12 @@ export function extractImageUrls(markdown: string): ImageRef[] {
   const tokens = marked.lexer(markdown);
   marked.walkTokens(tokens, (token) => {
     if (token.type === "image") {
-      results.push({ alt: token.text, url: token.href, raw: token.raw });
+      results.push({
+        alt: token.text,
+        url: token.href,
+        raw: token.raw,
+        title: token.title || undefined,
+      });
     }
   });
   return results;
@@ -56,7 +64,8 @@ export function replaceImageUrls(
     const img = images[i];
     const filename = urlToFilename.get(img.url);
     if (filename) {
-      const replacement = `![${img.alt}](${filename})`;
+      const titlePart = img.title ? ` "${img.title}"` : "";
+      const replacement = `![${img.alt}](${filename}${titlePart})`;
       const idx = result.lastIndexOf(img.raw);
       if (idx !== -1) {
         result =
@@ -78,7 +87,31 @@ function isGitHubUrl(url: string): boolean {
   }
 }
 
-export function isSafeUrl(url: string, allowedHosts?: string[]): boolean {
+// Strip the IPv4-mapped IPv6 prefix (::ffff:) so embedded IPv4 addresses
+// are matched against the IPv4 private patterns.
+function normalizeIp(ip: string): string {
+  const lower = ip.toLowerCase();
+  if (lower.startsWith("::ffff:")) {
+    const rest = ip.slice(7);
+    if (isIP(rest) === 4) return rest;
+  }
+  return ip;
+}
+
+export function isPrivateIp(ip: string): boolean {
+  const normalized = normalizeIp(ip);
+  for (const pattern of PRIVATE_IP_PATTERNS) {
+    if (pattern.test(normalized)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function isSafeUrl(
+  url: string,
+  allowedHosts?: string[],
+): Promise<boolean> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -91,16 +124,34 @@ export function isSafeUrl(url: string, allowedHosts?: string[]): boolean {
     return false;
   }
 
-  // If allowlist provided, only those hosts pass
-  if (allowedHosts && allowedHosts.length > 0) {
-    return allowedHosts.includes(parsed.hostname);
+  // URL.hostname returns IPv6 wrapped in brackets — strip them
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  const hasAllowlist = !!(allowedHosts && allowedHosts.length > 0);
+
+  // If hostname is a literal IP, check it directly — DNS lookup would be a no-op
+  // and the regex patterns must only be applied to actual IPs (not hostnames
+  // that happen to start with digits, like "10.example.com").
+  if (isIP(hostname)) {
+    if (isPrivateIp(hostname)) return false;
+    if (hasAllowlist && !allowedHosts!.includes(hostname)) return false;
+    return true;
   }
 
-  // Block private/loopback/link-local IPs
-  for (const pattern of PRIVATE_IP_PATTERNS) {
-    if (pattern.test(parsed.hostname)) {
-      return false;
+  // Hostname path: apply allowlist as a *filter*, not a bypass — DNS checks
+  // still run so an allowlisted host that resolves to a private address is rejected.
+  if (hasAllowlist && !allowedHosts!.includes(hostname)) {
+    return false;
+  }
+
+  // Resolve every A/AAAA record and reject if any points to a private range.
+  try {
+    const addresses = await lookup(hostname, { all: true });
+    if (addresses.length === 0) return false;
+    for (const { address } of addresses) {
+      if (isPrivateIp(address)) return false;
     }
+  } catch {
+    return false;
   }
 
   return true;
@@ -126,28 +177,35 @@ function filenameFromUrl(url: string, contentType: string | null): string {
 export function deduplicateFilenames(
   entries: { url: string; filename: string }[],
 ): Map<string, string> {
-  // Count occurrences of each filename
-  const counts = new Map<string, number>();
+  // Pass 1: record every natural filename so suffixed candidates don't steal
+  // a name that another entry still needs.
+  const natural = new Set<string>();
   for (const e of entries) {
-    counts.set(e.filename, (counts.get(e.filename) || 0) + 1);
+    natural.add(e.filename);
   }
 
-  // For colliding names, append -1, -2, etc.
-  const counters = new Map<string, number>();
+  // Pass 2: walk entries, assigning the natural name on first occurrence and
+  // a fresh numeric suffix on duplicates — skipping any candidate that's
+  // either already assigned or claimed by a different entry's natural name.
+  const assigned = new Set<string>();
   const result = new Map<string, string>();
   for (const e of entries) {
-    if ((counts.get(e.filename) || 0) > 1) {
-      const n = (counters.get(e.filename) || 0) + 1;
-      counters.set(e.filename, n);
-      const dotIdx = e.filename.lastIndexOf(".");
-      const dedupedName =
-        dotIdx !== -1
-          ? `${e.filename.slice(0, dotIdx)}-${n}${e.filename.slice(dotIdx)}`
-          : `${e.filename}-${n}`;
-      result.set(e.url, dedupedName);
-    } else {
+    if (!assigned.has(e.filename)) {
+      assigned.add(e.filename);
       result.set(e.url, e.filename);
+      continue;
     }
+    const dotIdx = e.filename.lastIndexOf(".");
+    const stem = dotIdx !== -1 ? e.filename.slice(0, dotIdx) : e.filename;
+    const ext = dotIdx !== -1 ? e.filename.slice(dotIdx) : "";
+    let n = 1;
+    let candidate = `${stem}-${n}${ext}`;
+    while (assigned.has(candidate) || natural.has(candidate)) {
+      n++;
+      candidate = `${stem}-${n}${ext}`;
+    }
+    assigned.add(candidate);
+    result.set(e.url, candidate);
   }
   return result;
 }
@@ -158,7 +216,7 @@ export async function downloadImage(
   allowedHosts?: string[],
 ): Promise<{ buffer: Buffer; filename: string; contentType: string } | null> {
   try {
-    if (!isSafeUrl(url, allowedHosts)) {
+    if (!(await isSafeUrl(url, allowedHosts))) {
       core.warning(`Blocked image download from unsafe URL: ${url}`);
       return null;
     }
@@ -168,7 +226,19 @@ export async function downloadImage(
       headers["Authorization"] = `token ${githubToken}`;
     }
 
-    const response = await fetch(url, { headers });
+    // redirect: "manual" prevents fetch from auto-following redirects to a
+    // private address that wouldn't pass isSafeUrl.
+    const response = await fetch(url, { headers, redirect: "manual" });
+
+    // Manual redirect handling returns the 3xx response itself. Reject it —
+    // the redirect target would need its own SSRF validation.
+    if (response.status >= 300 && response.status < 400) {
+      core.warning(
+        `Blocked redirect from ${url} to ${response.headers.get("location") || "(unknown)"}`,
+      );
+      return null;
+    }
+
     if (!response.ok) {
       core.warning(`Failed to download image ${url}: ${response.status}`);
       return null;
@@ -176,7 +246,7 @@ export async function downloadImage(
 
     const rawContentType =
       response.headers.get("content-type") || "application/octet-stream";
-    const contentType = stripContentType(rawContentType);
+    const contentType = stripContentType(rawContentType).toLowerCase();
 
     // Validate content type is an image
     if (!contentType.startsWith("image/")) {

@@ -48,7 +48,7 @@ inputs:
     required: false
     default: "false"
   github_token:
-    description: "GitHub token for downloading GitHub-hosted images in PR bodies and authenticating API requests. Usually secrets.GITHUB_TOKEN."
+    description: "GitHub token used to authorize image downloads from GitHub-hosted URLs in PR bodies. Usually secrets.GITHUB_TOKEN."
     required: false
     default: ""
   allowed_image_hosts:
