@@ -1,0 +1,68 @@
+name: Update Major Version Tag
+run-name: ${{ github.event_name == 'release' && format('Move major tag for release {0}', github.event.release.tag_name) || format('Move {0} to {1}', github.event.inputs.major_version, github.event.inputs.target) }}
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "The tag or reference to point the major version at (e.g. v1.2.3)"
+        required: true
+      major_version:
+        description: "The major version tag to move (e.g. v1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve inputs
+        id: vars
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TARGET: ${{ github.event.inputs.target }}
+          INPUT_MAJOR: ${{ github.event.inputs.major_version }}
+        run: |
+          if [ "$EVENT_NAME" = "release" ]; then
+            target="$RELEASE_TAG"
+            # Extract leading vN from a semver tag like v1.2.3, v1.2.3-alpha, etc.
+            if [[ "$target" =~ ^(v[0-9]+)\. ]]; then
+              major="${BASH_REMATCH[1]}"
+            else
+              echo "Release tag '$target' does not look like vMAJOR.MINOR.PATCH; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            target="$INPUT_TARGET"
+            major="$INPUT_MAJOR"
+          fi
+          # Reject anything that isn't a clean vMAJOR tag — protects against
+          # typos or misuse force-pushing over unrelated refs.
+          if [[ ! "$major" =~ ^v[0-9]+$ ]]; then
+            echo "Refusing to move tag '$major': expected pattern ^v[0-9]+$"
+            exit 1
+          fi
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "major=$major"  >> "$GITHUB_OUTPUT"
+
+      - name: Git config
+        if: steps.vars.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Move major tag
+        if: steps.vars.outputs.skip != 'true'
+        run: |
+          git tag -f "${{ steps.vars.outputs.major }}" "${{ steps.vars.outputs.target }}"
+          git push origin "${{ steps.vars.outputs.major }}" --force
