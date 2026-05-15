@@ -10,7 +10,7 @@ A GitHub Action that extracts Jira issue keys from GitHub events and posts posts
 ## Quick Start
 
 ```yaml
-- uses: procyon-creative/jira-action-man@main
+- uses: procyon-creative/jira-action-man@v1
   id: jira
   with:
     projects: "PROJ,TEAM"
@@ -59,7 +59,7 @@ Keys are sorted alphabetically by project prefix, then numerically by issue numb
 ### Pull Request with Multiple Sources
 
 ```yaml
-- uses: procyon-creative/jira-action-man@main
+- uses: procyon-creative/jira-action-man@v1
   id: jira
   with:
     projects: "PROJ"
@@ -70,7 +70,7 @@ Keys are sorted alphabetically by project prefix, then numerically by issue numb
 ### Use Extracted Keys in Later Steps
 
 ```yaml
-- uses: procyon-creative/jira-action-man@main
+- uses: procyon-creative/jira-action-man@v1
   id: jira
   with:
     projects: "PROJ,TEAM"
@@ -92,7 +92,7 @@ When `post_to_jira` is enabled on `pull_request` events, the action posts the PR
 | `minimal` | Creates a single-line link to the PR. Low noise. |
 
 ```yaml
-- uses: procyon-creative/jira-action-man@main
+- uses: procyon-creative/jira-action-man@v1
   id: jira
   with:
     projects: "PROJ"
