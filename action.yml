@@ -65,5 +65,5 @@ outputs:
     description: '"true" if any keys were found, "false" otherwise'
 
 runs:
-  using: "node20"
+  using: "node24"
   main: "dist/index.js"
