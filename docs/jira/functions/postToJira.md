@@ -8,7 +8,7 @@
 
 > **postToJira**(`keys`, `pr`, `config`, `mode`, `prAction`, `failOnError`, `githubToken?`, `allowedHosts?`): `Promise`\<`void`\>
 
-Defined in: [jira.ts:374](https://github.com/procyon-creative/jira-action-man/blob/dcbfefb2f51e975f89b4ebe2b7e8c0bb9beb9542/src/jira.ts#L374)
+Defined in: [jira.ts:422](https://github.com/procyon-creative/jira-action-man/blob/44ae233d3f47fd96af9faa7bf23e4de4831576ab/src/jira.ts#L422)
 
 ## Parameters
 

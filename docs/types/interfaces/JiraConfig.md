@@ -6,7 +6,7 @@
 
 # Interface: JiraConfig
 
-Defined in: [types.ts:16](https://github.com/procyon-creative/jira-action-man/blob/dcbfefb2f51e975f89b4ebe2b7e8c0bb9beb9542/src/types.ts#L16)
+Defined in: [types.ts:16](https://github.com/procyon-creative/jira-action-man/blob/44ae233d3f47fd96af9faa7bf23e4de4831576ab/src/types.ts#L16)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [types.ts:16](https://github.com/procyon-creative/jira-action-man/bl
 
 > **apiToken**: `string`
 
-Defined in: [types.ts:19](https://github.com/procyon-creative/jira-action-man/blob/dcbfefb2f51e975f89b4ebe2b7e8c0bb9beb9542/src/types.ts#L19)
+Defined in: [types.ts:19](https://github.com/procyon-creative/jira-action-man/blob/44ae233d3f47fd96af9faa7bf23e4de4831576ab/src/types.ts#L19)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [types.ts:19](https://github.com/procyon-creative/jira-action-man/bl
 
 > **baseUrl**: `string`
 
-Defined in: [types.ts:17](https://github.com/procyon-creative/jira-action-man/blob/dcbfefb2f51e975f89b4ebe2b7e8c0bb9beb9542/src/types.ts#L17)
+Defined in: [types.ts:17](https://github.com/procyon-creative/jira-action-man/blob/44ae233d3f47fd96af9faa7bf23e4de4831576ab/src/types.ts#L17)
 
 ***
 
@@ -30,4 +30,4 @@ Defined in: [types.ts:17](https://github.com/procyon-creative/jira-action-man/bl
 
 > **email**: `string`
 
-Defined in: [types.ts:18](https://github.com/procyon-creative/jira-action-man/blob/dcbfefb2f51e975f89b4ebe2b7e8c0bb9beb9542/src/types.ts#L18)
+Defined in: [types.ts:18](https://github.com/procyon-creative/jira-action-man/blob/44ae233d3f47fd96af9faa7bf23e4de4831576ab/src/types.ts#L18)

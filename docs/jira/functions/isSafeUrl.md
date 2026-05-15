@@ -8,7 +8,7 @@
 
 > **isSafeUrl**(`url`, `allowedHosts?`): `Promise`\<`boolean`\>
 
-Defined in: [jira.ts:91](https://github.com/procyon-creative/jira-action-man/blob/dcbfefb2f51e975f89b4ebe2b7e8c0bb9beb9542/src/jira.ts#L91)
+Defined in: [jira.ts:111](https://github.com/procyon-creative/jira-action-man/blob/44ae233d3f47fd96af9faa7bf23e4de4831576ab/src/jira.ts#L111)
 
 ## Parameters
 

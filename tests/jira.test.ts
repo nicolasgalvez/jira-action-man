@@ -10,16 +10,26 @@ import {
 import { JiraConfig, PrContext } from "../src/types";
 
 jest.mock("node:dns/promises", () => ({
-  lookup: jest.fn(async (hostname: string) => {
-    // Simulate DNS resolution for tests
+  lookup: jest.fn(async (hostname: string, options?: { all?: boolean }) => {
+    // The production code always uses { all: true }; older tests that pass no
+    // options receive the legacy single-record shape.
+    let addresses: Array<{ address: string; family: number }>;
     if (hostname === "resolves-to-private.example.com") {
-      return { address: "127.0.0.1", family: 4 };
+      addresses = [{ address: "127.0.0.1", family: 4 }];
+    } else if (hostname === "resolves-to-10.example.com") {
+      addresses = [{ address: "10.0.0.1", family: 4 }];
+    } else if (hostname === "resolves-to-mapped-ipv6.example.com") {
+      addresses = [{ address: "::ffff:127.0.0.1", family: 6 }];
+    } else if (hostname === "resolves-to-mixed.example.com") {
+      // One public, one private — any-private must reject
+      addresses = [
+        { address: "93.184.216.34", family: 4 },
+        { address: "10.0.0.1", family: 4 },
+      ];
+    } else {
+      addresses = [{ address: "93.184.216.34", family: 4 }];
     }
-    if (hostname === "resolves-to-10.example.com") {
-      return { address: "10.0.0.1", family: 4 };
-    }
-    // Public hostnames resolve to a public IP
-    return { address: "93.184.216.34", family: 4 };
+    return options?.all ? addresses : addresses[0];
   }),
 }));
 
@@ -454,6 +464,41 @@ describe("isSafeUrl", () => {
       isSafeUrl("https://resolves-to-10.example.com/img.png"),
     ).resolves.toBe(false);
   });
+
+  it("rejects hostnames that resolve to IPv4-mapped IPv6 private addresses", async () => {
+    await expect(
+      isSafeUrl("https://resolves-to-mapped-ipv6.example.com/img.png"),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects when any of multiple resolved addresses is private", async () => {
+    await expect(
+      isSafeUrl("https://resolves-to-mixed.example.com/img.png"),
+    ).resolves.toBe(false);
+  });
+
+  it("does not treat hostname '10.example.com' as a private IP literal", async () => {
+    // The hostname starts with '10.' but is not an IP literal — DNS lookup
+    // returns a public address, so it should be allowed.
+    await expect(isSafeUrl("https://10.example.com/img.png")).resolves.toBe(
+      true,
+    );
+  });
+
+  it("still runs private-IP checks when an allowlist is provided", async () => {
+    // Allowlisted hostname that resolves to a private IP must still be rejected
+    await expect(
+      isSafeUrl("https://resolves-to-10.example.com/img.png", [
+        "resolves-to-10.example.com",
+      ]),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects literal private IPs even if allowlisted", async () => {
+    await expect(
+      isSafeUrl("https://127.0.0.1/img.png", ["127.0.0.1"]),
+    ).resolves.toBe(false);
+  });
 });
 
 describe("downloadImage", () => {
@@ -532,16 +577,16 @@ describe("deduplicateFilenames", () => {
     expect(result.get("https://b.com/2.png")).toBe("2.png");
   });
 
-  it("appends -1, -2 for colliding filenames", () => {
+  it("keeps the first occurrence and suffixes duplicates", () => {
     const entries = [
       { url: "https://a.com/img.png", filename: "img.png" },
       { url: "https://b.com/img.png", filename: "img.png" },
       { url: "https://c.com/img.png", filename: "img.png" },
     ];
     const result = deduplicateFilenames(entries);
-    expect(result.get("https://a.com/img.png")).toBe("img-1.png");
-    expect(result.get("https://b.com/img.png")).toBe("img-2.png");
-    expect(result.get("https://c.com/img.png")).toBe("img-3.png");
+    expect(result.get("https://a.com/img.png")).toBe("img.png");
+    expect(result.get("https://b.com/img.png")).toBe("img-1.png");
+    expect(result.get("https://c.com/img.png")).toBe("img-2.png");
   });
 
   it("handles files without extensions", () => {
@@ -550,8 +595,22 @@ describe("deduplicateFilenames", () => {
       { url: "https://b.com/image", filename: "image" },
     ];
     const result = deduplicateFilenames(entries);
-    expect(result.get("https://a.com/image")).toBe("image-1");
-    expect(result.get("https://b.com/image")).toBe("image-2");
+    expect(result.get("https://a.com/image")).toBe("image");
+    expect(result.get("https://b.com/image")).toBe("image-1");
+  });
+
+  it("avoids re-colliding with an existing non-duplicate name", () => {
+    // Two files named img.png and one already-named img-1.png: the deduped
+    // second copy must skip img-1.png and use img-2.png instead.
+    const entries = [
+      { url: "https://a.com/img.png", filename: "img.png" },
+      { url: "https://b.com/img.png", filename: "img.png" },
+      { url: "https://c.com/img-1.png", filename: "img-1.png" },
+    ];
+    const result = deduplicateFilenames(entries);
+    expect(result.get("https://a.com/img.png")).toBe("img.png");
+    expect(result.get("https://b.com/img.png")).toBe("img-2.png");
+    expect(result.get("https://c.com/img-1.png")).toBe("img-1.png");
   });
 });
 
