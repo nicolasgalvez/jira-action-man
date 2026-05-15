@@ -46,6 +46,12 @@ jobs:
             target="$INPUT_TARGET"
             major="$INPUT_MAJOR"
           fi
+          # Reject anything that isn't a clean vMAJOR tag — protects against
+          # typos or misuse force-pushing over unrelated refs.
+          if [[ ! "$major" =~ ^v[0-9]+$ ]]; then
+            echo "Refusing to move tag '$major': expected pattern ^v[0-9]+$"
+            exit 1
+          fi
           echo "target=$target" >> "$GITHUB_OUTPUT"
           echo "major=$major"  >> "$GITHUB_OUTPUT"
 
